@@ -5,63 +5,50 @@ namespace CsvParser.SourceGenerator;
 [Generator]
 public class CsvSerializationGenerator : IIncrementalGenerator
 {
-    private static readonly SymbolDisplayFormat ShortTypeNameFormat = new(
-        SymbolDisplayGlobalNamespaceStyle.Omitted,
-        SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces
-    );
-    
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var values = context.SyntaxProvider
             .ForAttributeWithMetadataName("CsvParser.Library.CsvSerializableAttribute",
                 static (_, _) => true,
-                TransformDeclaration
+                static (context, token) => TransformDeclaration(context, token).ToEquatableReadOnlyList()
             )
-            .Where(x => x is not null)
-            .Select((x, _) => x!)
+            .SelectMany(static (x, _) => x)
             .Collect();
 
         context.RegisterSourceOutput(values, WriteSource);
     }
 
-    private static CsvSerializableDeclaration? TransformDeclaration(
+    private static IEnumerable<CsvSerializableDeclaration> TransformDeclaration(
         GeneratorAttributeSyntaxContext context,
         CancellationToken cancellationToken
     )
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (context.Attributes is not [{ } attribute])
-        {
-            return null;
-        }
-
-        if (attribute.ConstructorArguments is not [{ Value: INamedTypeSymbol type }])
-        {
-            return null;
-        }
-
-        foreach (var member in type.GetTypeMembers())
+        foreach (AttributeData attribute in context.Attributes)
         {
             cancellationToken.ThrowIfCancellationRequested();
-        }
 
-        var props = type
-            .GetMembers()
-            .OfType<IPropertySymbol>()
-            .Where(x => x.DeclaredAccessibility == Accessibility.Public && x.Kind == SymbolKind.Property)
-            .Select(x =>
+            if (attribute.ConstructorArguments is not [{ Value: INamedTypeSymbol type }])
             {
-                bool isUseSet = x.Type is { ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true }, MetadataName: "String" };
-                return new Property(x.Name, isUseSet);
-            })
-            .ToEquatableReadOnlyList();
+                continue;
+            }
 
-        return new(
-            type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            type.ToDisplayString(ShortTypeNameFormat).Replace(".", ""),
-            props
-        );
+            foreach (var member in type.GetTypeMembers())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            var props = type
+                .GetMembers()
+                .OfType<IPropertySymbol>()
+                .Where(x => x.DeclaredAccessibility == Accessibility.Public && x.Kind == SymbolKind.Property)
+                .Select(Property.FromSymbol)
+                .ToEquatableReadOnlyList();
+
+            yield return new(
+                TypeName.FromSymbol(type),
+                props
+            );
+        }
     }
 
     private static void WriteSource(
@@ -77,7 +64,7 @@ public class CsvSerializationGenerator : IIncrementalGenerator
 
             public static class CsvSerializer
             {
-                private delegate void PopulateRow(object input, global::nietras.SeparatedValues.SepWriter.Row row); 
+                private delegate void PopulateRow(object input, global::nietras.SeparatedValues.SepWriter.Row row, string path = ""); 
                 
             """);
 
@@ -104,7 +91,8 @@ public class CsvSerializationGenerator : IIncrementalGenerator
 
         foreach (CsvSerializableDeclaration decl in declarations)
         {
-            codeStringBuilder.AppendLine($"[typeof({decl.QualifiedTypeName})] = {decl.GetSerializeMethodName()},");
+            codeStringBuilder.AppendLine(
+                $"[typeof({decl.TypeName.QualifiedName})] = {decl.TypeName.GetSerializeMethodName()},");
         }
 
         codeStringBuilder.DecreaseIndent();
@@ -122,7 +110,7 @@ public class CsvSerializationGenerator : IIncrementalGenerator
             GenerateSerializeMethod(codeStringBuilder, decl);
             codeStringBuilder.AppendLine();
         }
-        
+
         codeStringBuilder.AppendLine(
             """
             public static string Serialize<T>(global::System.Collections.Generic.IEnumerable<T> input)
@@ -156,23 +144,40 @@ public class CsvSerializationGenerator : IIncrementalGenerator
     {
         codeStringBuilder.AppendLine(
             $$"""
-              private static void {{decl.GetSerializeMethodName()}}(object input, global::nietras.SeparatedValues.SepWriter.Row row)
+              private static void {{decl.TypeName.GetSerializeMethodName()}}(object input, global::nietras.SeparatedValues.SepWriter.Row row, string path = "")
               {
               """);
         codeStringBuilder.IncreaseIndent();
-        codeStringBuilder.AppendLine($"{decl.QualifiedTypeName} castedInput = ({decl.QualifiedTypeName})input;");
+        codeStringBuilder.AppendLine(
+            $"{decl.TypeName.QualifiedName} castedInput = ({decl.TypeName.QualifiedName})input;");
         codeStringBuilder.AppendLine();
         
+        codeStringBuilder.AppendLine(
+            """
+            string pathPrefix = path.Length > 0 
+                ? path + "/"
+                : string.Empty;        
+                                  
+            """);
+
         foreach (var property in decl.Properties)
         {
-            string method = property.IsUseSet ? "Set" : "Format";
-            codeStringBuilder.AppendLine(
-                $"""
-                 row["{property.Name}"].{method}(castedInput.{property.Name});
-                 """
-            );
+            if (property.IsComplex)
+            {
+                codeStringBuilder.AppendLine(
+                    $"{property.TypeName.GetSerializeMethodName()}(castedInput.{property.Name}, row, pathPrefix + nameof({decl.TypeName.QualifiedName}.{property.Name}));");
+            }
+            else
+            {
+                string method = property.IsUseSet ? "Set" : "Format";
+                codeStringBuilder.AppendLine(
+                    $"""
+                     row[pathPrefix + "{property.Name}"].{method}(castedInput.{property.Name});
+                     """
+                );
+            }
         }
-        
+
         codeStringBuilder.DecreaseIndent();
         codeStringBuilder.AppendLine("}");
     }

@@ -8,16 +8,24 @@ public class CsvSerializationGeneratorTests
         var result = GeneratorTestHelper.RunGenerator<CsvSerializationGenerator>(
             """
             using CsvParser.Library;
-
-            [assembly: CsvSerializable(typeof(MyNamespace.MyClass))]
-
-            namespace MyNamespace
+            
+            [assembly: CsvSerializable(typeof(CsvParser.Models.MyClass2))]
+            [assembly: CsvSerializable(typeof(CsvParser.Models.MyClass3))]
+            
+            namespace CsvParser.Models
             {
-                public class MyClass
+                public class MyClass2
                 {
-                    public int Integer { get; set; }
-                    
-                    public string String { get; set; }
+                    public string String { get; init; }
+            
+                    public int Integer { get; init; }
+            
+                    public MyClass3 SubProperty { get; init; }
+                }
+            
+                public class MyClass3
+                {
+                    public long Long { get; init; }
                 }
             }
             """);
